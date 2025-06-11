@@ -10,6 +10,10 @@ import pandas as pd
 from pathlib import Path
 import os
 
+# create a folder for the graphs to be saved in
+OUTPUT_DIR = Path(__file__).parent.parent / 'output'
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
 # Mapping dictionaries for categorical variables
 # These convert categorical labels to numeric codes for analysis
 MAPPINGS = {
@@ -270,9 +274,9 @@ def draw_delta_plots(data, pnum):
     fig, axes = plt.subplots(n_conditions, n_conditions, 
                             figsize=(4*n_conditions, 4*n_conditions))
     
-    # Create output directory
-    OUTPUT_DIR = Path(__file__).parent.parent.parent / 'output'
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    # # Create output directory
+    # OUTPUT_DIR = Path(__file__).parent.parent.parent / 'output'
+    # os.makedirs(OUTPUT_DIR, exist_ok=True)
     
     # Define marker style for plots
     marker_style = {
@@ -429,7 +433,8 @@ def run_analysis(data_file_path):
         axes[row, col].set_title(title)
     
     plt.tight_layout()
-    plt.show()
+    plt.savefig(OUTPUT_DIR / 'posterior_distributions.png')
+    plt.close()
     
     # Step 5: Generate delta plots for first participant
     print("\n6. Generating delta plots...")

@@ -1,2 +1,4 @@
 # 107_final
 cogs 107 final assignment
+
+This code adapts the file given to us in order to quantify the effect of the Stimulus Type and Trial Difficulty on the participants' performance, check the convergence of the SDT model, and display the posterior distributions of the parameters. It combines insights from the SDT model and the delta plots to compare the effects of the Trial Difficulty manipulation with the effects of the Stimulus Type manipulation. The delta plots and posterior distribution plots are saved to the output folder. * this code was written and debugged with help from Claude and chatGBT.

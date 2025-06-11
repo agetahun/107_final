@@ -98,7 +98,7 @@ def read_data(file_path, prepare_for='sdt', display=False):
         data = pd.DataFrame(sdt_data)
         
         if display:
-            print("\nSDT summary:")
+            print("\nSDT Summary:")
             print(data)
             if data.empty:
                 print("\nWARNING: Empty SDT summary generated!")
@@ -168,6 +168,7 @@ def apply_hierarchical_sdt_model(data):
     
     This function implements a Bayesian hierarchical model for SDT analysis,
     allowing for both group-level and individual-level parameter estimation.
+    This version adds covariates for stimulus type and trial difficulty.
     
     Args:
         data: DataFrame containing SDT summary statistics
@@ -175,39 +176,75 @@ def apply_hierarchical_sdt_model(data):
     Returns:
         PyMC model object
     """
+    # Extract stimulus type and difficulty from condition
+    data = data.copy()
+    data['stimulus_type'] = data['condition'] % 2  # 0=simple, 1=complex
+    data['difficulty'] = data['condition'] // 2    # 0=easy, 1=hard
+
     # Get unique participants and conditions
     P = len(data['pnum'].unique())
     C = len(data['condition'].unique())
+    N = len(data)
+
+    # Convert to arrays for indexing
+    pnum_idx = data['pnum'].values - 1  # Convert to 0-based indexing
+    condition_idx = data['condition'].values
+    stimulus_type = data['stimulus_type'].values
+    difficulty = data['difficulty'].values
     
     # Define the hierarchical model
     with pm.Model() as sdt_model:
-        # Group-level parameters
-        mean_d_prime = pm.Normal('mean_d_prime', mu=0.0, sigma=1.0, shape=C)
-        stdev_d_prime = pm.HalfNormal('stdev_d_prime', sigma=1.0)
+        # Group-level baseline parameters
+        mean_d_prime_baseline = pm.Normal('mean_d_prime_baseline', mu=1.0, sigma=1.0)
+        mean_criterion_baseline = pm.Normal('mean_criterion_baseline', mu=0.0, sigma=1.0)
         
-        mean_criterion = pm.Normal('mean_criterion', mu=0.0, sigma=1.0, shape=C)
-        stdev_criterion = pm.HalfNormal('stdev_criterion', sigma=1.0)
+        # ASSIGNMENT REQUIREMENT: Effects of Stimulus Type and Trial Difficulty
+        # Effect of stimulus type (simple vs complex)
+        d_prime_stimulus_effect = pm.Normal('d_prime_stimulus_effect', mu=0.0, sigma=0.5)
+        criterion_stimulus_effect = pm.Normal('criterion_stimulus_effect', mu=0.0, sigma=0.5)
+        
+        # Effect of difficulty (easy vs hard)
+        d_prime_difficulty_effect = pm.Normal('d_prime_difficulty_effect', mu=0.0, sigma=0.5)
+        criterion_difficulty_effect = pm.Normal('criterion_difficulty_effect', mu=0.0, sigma=0.5)
+        
+        # Interaction effect
+        d_prime_interaction = pm.Normal('d_prime_interaction', mu=0.0, sigma=0.5)
+        criterion_interaction = pm.Normal('criterion_interaction', mu=0.0, sigma=0.5)
+        
+        # Individual-level variability
+        stdev_d_prime = pm.HalfNormal('stdev_d_prime', sigma=0.5)
+        stdev_criterion = pm.HalfNormal('stdev_criterion', sigma=0.5)
+        
+        # Build linear predictors for each observation
+        d_prime_mu = (mean_d_prime_baseline + 
+                     d_prime_stimulus_effect * stimulus_type + 
+                     d_prime_difficulty_effect * difficulty +
+                     d_prime_interaction * stimulus_type * difficulty)
+        
+        criterion_mu = (mean_criterion_baseline + 
+                       criterion_stimulus_effect * stimulus_type + 
+                       criterion_difficulty_effect * difficulty +
+                       criterion_interaction * stimulus_type * difficulty)
         
         # Individual-level parameters
-        d_prime = pm.Normal('d_prime', mu=mean_d_prime, sigma=stdev_d_prime, shape=(P, C))
-        criterion = pm.Normal('criterion', mu=mean_criterion, sigma=stdev_criterion, shape=(P, C))
+        d_prime = pm.Normal('d_prime', mu=d_prime_mu, sigma=stdev_d_prime, shape=N)
+        criterion = pm.Normal('criterion', mu=criterion_mu, sigma=stdev_criterion, shape=N)
         
         # Calculate hit and false alarm rates using SDT
         hit_rate = pm.math.invlogit(d_prime - criterion)
         false_alarm_rate = pm.math.invlogit(-criterion)
                 
         # Likelihood for signal trials
-        # Note: pnum is 1-indexed in the data, but needs to be 0-indexed for the model, so we change the indexing here.  The results table will show participant numbers starting from 0, so we need to interpret the results accordingly.
         pm.Binomial('hit_obs', 
-                   n=data['nSignal'], 
-                   p=hit_rate[data['pnum']-1, data['condition']], 
-                   observed=data['hits'])
+                   n=data['nSignal'].values, 
+                   p=hit_rate, 
+                   observed=data['hits'].values)
         
         # Likelihood for noise trials
         pm.Binomial('false_alarm_obs', 
-                   n=data['nNoise'], 
-                   p=false_alarm_rate[data['pnum']-1, data['condition']], 
-                   observed=data['false_alarms'])
+                   n=data['nNoise'].values, 
+                   p=false_alarm_rate, 
+                   observed=data['false_alarms'].values)
     
     return sdt_model
 
@@ -312,8 +349,131 @@ def draw_delta_plots(data, pnum):
     # Save the figure
     plt.savefig(OUTPUT_DIR / f'delta_plots_{pnum}.png')
 
+def run_analysis(data_file_path):
+    """
+    Main analysis function for the assignment.
+    Quantifies effects of Stimulus Type and Trial Difficulty on performance.
+    """
+    
+    print("="*80)
+    print("SDT AND DELTA PLOT ANALYSIS - ASSIGNMENT SOLUTION")
+    print("="*80)
+    
+    # Step 1: Load and examine the data
+    print("\n1. Loading SDT data...")
+    sdt_data = read_data(data_file_path, prepare_for='sdt', display=True)
+    
+    print("\n2. Loading delta plot data...")
+    dp_data = read_data(data_file_path, prepare_for='delta plots', display=True)
+    
+    # Step 2: Fit the hierarchical SDT model with covariates
+    print("\n3. Fitting hierarchical SDT model with Stimulus Type and Difficulty effects...")
+    sdt_model = apply_hierarchical_sdt_model(sdt_data)
+    
+    # Sample from the model
+    print("   Sampling from posterior (this may take a few minutes)...")
+    with sdt_model:
+        trace = pm.sample(2000, tune=1000, chains=4, cores=4, 
+                         target_accept=0.95, return_inferencedata=True)
+    
+    # Step 3: Check convergence
+    print("\n4. Checking convergence...")
+    try:
+        # Get full summary statistics
+        conv_stats = az.summary(trace)
+        
+        # Extract convergence metrics
+        max_rhat = conv_stats['r_hat'].max()
+        min_ess = conv_stats[['ess_bulk', 'ess_tail']].min().min()
+        
+        print(f"Max R-hat: {max_rhat:.4f}")
+        print(f"Min Effective Sample Size: {min_ess:.0f}")
+        
+        if max_rhat > 1.1:
+            print("WARNING: Convergence issues detected (R-hat > 1.1)")
+            print("Problematic parameters:")
+            print(conv_stats[conv_stats['r_hat'] > 1.1][['r_hat']])
+        else:
+            print("Model converged successfully")
+            
+        # Optional: Show full diagnostics for top parameters
+        print("\nTop parameters by R-hat:")
+        print(conv_stats.sort_values('r_hat', ascending=False).head(10))
+        
+    except Exception as e:
+        print(f"Error in convergence check: {str(e)}")
+        print("\nFallback - Showing trace summary:")
+        print(az.summary(trace))
+    
+    # Step 4: Display posterior distributions
+    print("\n5. Posterior distributions of key parameters:")
+    
+    # Create summary table
+    summary = az.summary(trace, var_names=['d_prime_stimulus_effect', 'd_prime_difficulty_effect',
+                                          'criterion_stimulus_effect', 'criterion_difficulty_effect',
+                                          'd_prime_interaction', 'criterion_interaction'])
+    print(summary)
+    
+    # Plot posterior distributions
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    fig.suptitle('Posterior Distributions of Effect Parameters', fontsize=16)
+    
+    effects = ['d_prime_stimulus_effect', 'd_prime_difficulty_effect', 'd_prime_interaction',
+               'criterion_stimulus_effect', 'criterion_difficulty_effect', 'criterion_interaction']
+    titles = ['d\' Stimulus Effect', 'd\' Difficulty Effect', 'd\' Interaction',
+              'Criterion Stimulus Effect', 'Criterion Difficulty Effect', 'Criterion Interaction']
+    
+    for i, (effect, title) in enumerate(zip(effects, titles)):
+        row, col = i // 3, i % 3
+        az.plot_posterior(trace, var_names=[effect], ax=axes[row, col])
+        axes[row, col].set_title(title)
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Step 5: Generate delta plots for first participant
+    print("\n6. Generating delta plots...")
+    first_participant = dp_data['pnum'].iloc[0]
+    draw_delta_plots(dp_data, first_participant)
+    
+    # Step 6: Compare effects
+    print("\n7. COMPARISON OF STIMULUS TYPE vs DIFFICULTY EFFECTS:")
+    print("="*60)
+    
+    # Extract effect sizes
+    stimulus_d_effect = trace.posterior['d_prime_stimulus_effect'].mean().values
+    difficulty_d_effect = trace.posterior['d_prime_difficulty_effect'].mean().values
+    stimulus_c_effect = trace.posterior['criterion_stimulus_effect'].mean().values  
+    difficulty_c_effect = trace.posterior['criterion_difficulty_effect'].mean().values
+    
+    print(f"d' Effects:")
+    print(f"  Stimulus Type Effect: {stimulus_d_effect:.3f}")
+    print(f"  Difficulty Effect: {difficulty_d_effect:.3f}")
+    print(f"  → {'Stimulus type' if abs(stimulus_d_effect) > abs(difficulty_d_effect) else 'Difficulty'} has larger effect on sensitivity")
+    
+    print(f"\nCriterion Effects:")
+    print(f"  Stimulus Type Effect: {stimulus_c_effect:.3f}")
+    print(f"  Difficulty Effect: {difficulty_c_effect:.3f}")
+    print(f"  → {'Stimulus type' if abs(stimulus_c_effect) > abs(difficulty_c_effect) else 'Difficulty'} has larger effect on response bias")
+    
+    print(f"\nInterpretation:")
+    print(f"- Check delta plots for RT patterns:")
+    print(f"  * Flat slopes = bias effects")
+    print(f"  * Positive slopes = drift rate effects")
+    print(f"  * Different slopes for correct/error = selective influence")
+    
+    return trace, summary, sdt_data, dp_data
+
 # Main execution
 if __name__ == "__main__":
-    file_to_print = Path(__file__).parent / 'README.md'
-    with open(file_to_print, 'r') as file:
-        print(file.read())
+    DATA_FILE = "../data/data.csv"
+    
+    # Run the complete analysis
+    try:
+        trace, summary, sdt_data, dp_data = run_analysis(DATA_FILE)
+        print(f"\nAnalysis complete! Results saved and displayed above.")
+    except FileNotFoundError:
+        print(f"Data file '{DATA_FILE}' not found.")
+        print("Please update the DATA_FILE variable with the correct path.")
+    except Exception as e:
+        print(f"Error during analysis: {e}")
